@@ -122,7 +122,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.1.0");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.2.0");
 
     function destroy() {
       if (destroyed) return;
