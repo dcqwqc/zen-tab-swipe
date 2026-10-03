@@ -1,10 +1,12 @@
 # QWQC Two-Finger Tab Swipe
 
-A Zen/Sine mod plus a small host-side touchscreen filter for convertible Linux devices.
+Progressive two-finger tab switching for Zen Browser on Mirai-style convertible touchscreens.
 
-- Two fingers moving together horizontally: switch to the adjacent tab.
-- Finger spacing changing: pass the sequence through as native pinch zoom.
-- One-finger touch: pass through unchanged after a short second-finger grace window.
-- The filter only converts gestures while Zen is the active window.
+- Move two fingers together horizontally to **grab the current page**.
+- The page follows the gesture continuously; the neighboring tab is shown behind it.
+- Release early to cancel and spring back.
+- Drag far enough (about 22% of the screen) or flick decisively to commit.
+- Move the fingers apart/together instead and the sequence is passed through as native pinch zoom.
+- Swipe recognition runs only while Zen is the active window.
 
-The Sine settings control enable/disable and direction. A native Firefox swipe-pref mapping remains as a touchpad fallback, but direct touchscreen recognition is handled by the Wacom/evdev proxy because Firefox otherwise classifies these sequences as pinch zoom.
+The Sine mod renders the page preview using Firefox `PageThumbs`, while the host-side evdev proxy distinguishes direct-touchscreen swipe intent from pinch intent before Firefox converts everything into zoom.

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
+import configparser
 import json
 import math
 import os
 import signal
 import subprocess
-import configparser
-import sys
 import time
 from glob import glob
 from pathlib import Path
@@ -14,38 +13,45 @@ from evdev import InputDevice, UInput, ecodes
 
 DEVICE_NAME = os.environ.get("QWQC_TOUCH_DEVICE", "Wacom HID 53B7 Finger")
 
-# Delay a new one-finger sequence briefly so a second finger can join without
-# Firefox first seeing half of a pinch. Moving a single finger flushes earlier.
-SECOND_FINGER_GRACE = 0.090
-SINGLE_MOVE_FLUSH = 0.012
-
-# All movement values below are fractions of the physical touchscreen range.
-SWIPE_X = 0.042
-SWIPE_FINGER_X = 0.025
-DIAGONAL_FLUSH = 0.032
-MAX_SCALE_CHANGE_FOR_SWIPE = 0.16
-PINCH_SCALE_CHANGE = 0.105
-CLASSIFY_TIMEOUT = 0.260
+# Fractions of the physical touchscreen range.
+SECOND_FINGER_GRACE = 0.120
+SINGLE_MOVE_FLUSH = 0.010
+SWIPE_INTENT_X = 0.010
+SWIPE_INTENT_FINGER_X = 0.006
+VERTICAL_INTENT = 0.014
+PINCH_INTENT_SCALE = 0.070
+CLASSIFY_TIMEOUT = 0.420
+COMMIT_DISTANCE = 0.22
+FAST_COMMIT_MIN_DISTANCE = 0.065
+FAST_COMMIT_VELOCITY = 0.62
+STATE_THROTTLE = 0.010
+TRANSFORM_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "yoga-tablet-capture-transform"
 
 RUNNING = True
 CONFIG = {"enabled": True, "reverse": False}
 CONFIG_MTIME = None
 
 
-def active_profile_config():
+def active_profile_dir() -> Path | None:
     root = Path.home() / ".var/app/app.zen_browser.zen/.zen"
     cfg = configparser.ConfigParser()
     cfg.read(root / "profiles.ini")
     for section in cfg.sections():
         if section.startswith("Install") and cfg.has_option(section, "Default"):
-            return root / cfg.get(section, "Default") / "chrome/qwqc-tab-swipe-config.json"
+            return root / cfg.get(section, "Default")
     for section in cfg.sections():
         if section.startswith("Profile") and cfg.get(section, "Default", fallback="0") == "1":
-            return root / cfg.get(section, "Path") / "chrome/qwqc-tab-swipe-config.json"
+            return root / cfg.get(section, "Path")
     return None
 
 
-CONFIG_PATH = active_profile_config()
+PROFILE_DIR = active_profile_dir()
+CONFIG_PATH = PROFILE_DIR / "chrome/qwqc-tab-swipe-config.json" if PROFILE_DIR else None
+STATE_PATH = PROFILE_DIR / "chrome/qwqc-tab-swipe-state.json" if PROFILE_DIR else None
+
+
+def log(*parts):
+    print("[qwqc-zen-touch]", *parts, flush=True)
 
 
 def refresh_config():
@@ -65,8 +71,16 @@ def refresh_config():
         log("config read failed:", exc)
 
 
-def log(*parts):
-    print("[qwqc-zen-touch]", *parts, flush=True)
+def write_state(payload):
+    if not STATE_PATH:
+        return
+    try:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")))
+        os.replace(tmp, STATE_PATH)
+    except Exception as exc:
+        log("state write failed:", exc)
 
 
 def find_device():
@@ -100,22 +114,24 @@ def zen_active():
         return False
 
 
-def switch_tab(direction):
-    # User-facing direction: fingers moving right -> tab to the right.
-    if CONFIG.get("reverse"):
-        direction = -direction
-    key = "Page_Down" if direction > 0 else "Page_Up"
-    try:
-        subprocess.Popen(
-            ["wtype", "-M", "ctrl", "-k", key, "-m", "ctrl"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        log("tab", "right" if direction > 0 else "left")
-    except Exception as exc:
-        log("wtype failed:", exc)
 
+def read_transform():
+    try:
+        return int(TRANSFORM_PATH.read_text().strip()) % 4
+    except Exception:
+        return 0
+
+
+def screen_vector(dx, dy, transform):
+    # Match Wayland/Hyprland's output transform so horizontal means horizontal
+    # on the screen even when the convertible is in portrait.
+    if transform == 1:
+        return dy, -dx
+    if transform == 2:
+        return -dx, -dy
+    if transform == 3:
+        return -dy, dx
+    return dx, dy
 
 def norm_distance(a, b, xr, yr):
     dx = (a[0] - b[0]) / xr
@@ -142,7 +158,6 @@ def main():
         phys="qwqc/zen-touch-filter",
         filtered_types=(ecodes.EV_SYN,),
     )
-    # Let Hyprland discover the virtual touchscreen before the physical one is grabbed.
     time.sleep(0.35)
     dev.grab()
     log(f"grabbed {dev.path} ({dev.name}); virtual={ui.device}; range={xr}x{yr}")
@@ -157,7 +172,7 @@ def main():
     current_slot = 0
     slots = {}
     frame = []
-    mode = "idle"  # idle | single | two | pass | suppress
+    mode = "idle"  # idle | single | two | swipe | pass | suppress
     buffer = []
     gesture_start = 0.0
     single_start = None
@@ -165,7 +180,11 @@ def main():
     two_start = None
     two_start_dist = None
     two_start_time = 0.0
-    started_in_zen = False
+    swipe_seq = 0
+    swipe_last_dx = 0.0
+    swipe_last_time = 0.0
+    swipe_velocity = 0.0
+    last_state_write = 0.0
 
     def active_contacts():
         out = {}
@@ -175,8 +194,8 @@ def main():
         return out
 
     def emit(events):
-        for ev in events:
-            ui.write(ev.type, ev.code, ev.value)
+        for event in events:
+            ui.write(event.type, event.code, event.value)
 
     def flush_buffer():
         nonlocal buffer
@@ -184,9 +203,10 @@ def main():
             emit(buffer)
             buffer = []
 
-    def reset():
+    def reset(clear_state=False):
         nonlocal mode, buffer, gesture_start, single_start, two_slots, two_start
-        nonlocal two_start_dist, two_start_time, started_in_zen
+        nonlocal two_start_dist, two_start_time, swipe_last_dx, swipe_last_time
+        nonlocal swipe_velocity, last_state_write
         mode = "idle"
         buffer = []
         gesture_start = 0.0
@@ -195,7 +215,68 @@ def main():
         two_start = None
         two_start_dist = None
         two_start_time = 0.0
-        started_in_zen = False
+        swipe_last_dx = 0.0
+        swipe_last_time = 0.0
+        swipe_velocity = 0.0
+        last_state_write = 0.0
+        if clear_state:
+            write_state({"phase": "idle", "seq": swipe_seq, "updatedAt": time.time_ns()})
+
+    def begin_two(contacts, now):
+        nonlocal mode, two_slots, two_start, two_start_dist, two_start_time
+        mode = "two"
+        two_slots = tuple(sorted(contacts))
+        two_start = {slot: contacts[slot] for slot in two_slots}
+        a, b = (two_start[s] for s in two_slots)
+        two_start_dist = norm_distance(a, b, xr, yr)
+        two_start_time = now
+
+    def geometry(contacts):
+        p0 = two_start[two_slots[0]]
+        p1 = two_start[two_slots[1]]
+        c0 = contacts[two_slots[0]]
+        c1 = contacts[two_slots[1]]
+        start_cx = (p0[0] + p1[0]) / 2
+        start_cy = (p0[1] + p1[1]) / 2
+        cx = (c0[0] + c1[0]) / 2
+        cy = (c0[1] + c1[1]) / 2
+        raw_dx = (cx - start_cx) / xr
+        raw_dy = (cy - start_cy) / yr
+        raw_d0x = (c0[0] - p0[0]) / xr
+        raw_d1x = (c1[0] - p1[0]) / xr
+        raw_d0y = (c0[1] - p0[1]) / yr
+        raw_d1y = (c1[1] - p1[1]) / yr
+        transform = read_transform()
+        dx, dy = screen_vector(raw_dx, raw_dy, transform)
+        d0x, d0y = screen_vector(raw_d0x, raw_d0y, transform)
+        d1x, d1y = screen_vector(raw_d1x, raw_d1y, transform)
+        dist = norm_distance(c0, c1, xr, yr)
+        scale_change = 0.0
+        if two_start_dist and two_start_dist > 0.005:
+            scale_change = dist / two_start_dist - 1.0
+        return dx, dy, d0x, d1x, d0y, d1y, scale_change
+
+    def publish_swipe(phase, dx, dy=0.0, velocity=0.0, commit=None, reason=None, force=False):
+        nonlocal last_state_write
+        now = time.monotonic()
+        if not force and phase == "update" and now - last_state_write < STATE_THROTTLE:
+            return
+        payload = {
+            "phase": phase,
+            "seq": swipe_seq,
+            "delta": round(dx, 6),
+            "vertical": round(dy, 6),
+            "velocity": round(velocity, 6),
+            "updatedAt": time.time_ns(),
+        }
+        if commit is not None:
+            payload["commit"] = bool(commit)
+        if reason:
+            payload["reason"] = reason
+        write_state(payload)
+        last_state_write = now
+
+    write_state({"phase": "idle", "seq": 0, "updatedAt": time.time_ns()})
 
     try:
         for ev in dev.read_loop():
@@ -203,7 +284,6 @@ def main():
                 break
 
             frame.append(ev)
-
             if ev.type == ecodes.EV_ABS:
                 if ev.code == ecodes.ABS_MT_SLOT:
                     current_slot = ev.value
@@ -233,36 +313,73 @@ def main():
                     emit(current_frame)
                     continue
                 refresh_config()
-                started_in_zen = zen_active() and CONFIG.get("enabled", True)
-                if not started_in_zen:
+                if not (zen_active() and CONFIG.get("enabled", True)):
                     emit(current_frame)
                     mode = "pass"
                     continue
-                mode = "single" if count == 1 else "two" if count == 2 else "pass"
                 buffer.extend(current_frame)
                 gesture_start = now
                 if count == 1:
+                    mode = "single"
                     single_start = next(iter(contacts.values()))
                 elif count == 2:
-                    two_slots = tuple(sorted(contacts))
-                    two_start = {slot: contacts[slot] for slot in two_slots}
-                    a, b = (two_start[s] for s in two_slots)
-                    two_start_dist = norm_distance(a, b, xr, yr)
-                    two_start_time = now
+                    begin_two(contacts, now)
                 else:
                     flush_buffer()
+                    mode = "pass"
                 continue
 
             if mode == "pass":
                 emit(current_frame)
                 if count == 0:
-                    reset()
+                    reset(clear_state=False)
                 continue
 
             if mode == "suppress":
-                # Entire gesture was never exposed to the compositor/browser.
                 if count == 0:
-                    reset()
+                    reset(clear_state=False)
+                continue
+
+            if mode == "swipe":
+                # Never expose any of this gesture to Firefox. It is now fully
+                # owned by the interactive tab-switch preview.
+                if count == 2 and two_slots and all(slot in contacts for slot in two_slots):
+                    dx, dy, *_rest = geometry(contacts)
+                    dt = max(1e-3, now - swipe_last_time)
+                    inst_velocity = (dx - swipe_last_dx) / dt
+                    # Smooth velocity enough that a tiny final wobble doesn't
+                    # accidentally turn a deliberate flick into a cancel.
+                    swipe_velocity = swipe_velocity * 0.72 + inst_velocity * 0.28
+                    swipe_last_dx = dx
+                    swipe_last_time = now
+                    publish_swipe("update", dx, dy, swipe_velocity)
+                    continue
+
+                commit = (
+                    abs(swipe_last_dx) >= COMMIT_DISTANCE
+                    or (
+                        abs(swipe_last_dx) >= FAST_COMMIT_MIN_DISTANCE
+                        and abs(swipe_velocity) >= FAST_COMMIT_VELOCITY
+                        and swipe_last_dx * swipe_velocity > 0
+                    )
+                )
+                publish_swipe(
+                    "end",
+                    swipe_last_dx,
+                    velocity=swipe_velocity,
+                    commit=commit,
+                    reason="release",
+                    force=True,
+                )
+                log(
+                    "swipe end",
+                    f"dx={swipe_last_dx:.3f}",
+                    f"v={swipe_velocity:.2f}",
+                    "commit" if commit else "cancel",
+                )
+                mode = "suppress" if count else "idle"
+                if count == 0:
+                    reset(clear_state=False)
                 continue
 
             buffer.extend(current_frame)
@@ -270,21 +387,15 @@ def main():
             if mode == "single":
                 if count == 0:
                     flush_buffer()
-                    reset()
+                    reset(clear_state=False)
                     continue
                 if count >= 3:
                     flush_buffer()
                     mode = "pass"
                     continue
                 if count == 2:
-                    mode = "two"
-                    two_slots = tuple(sorted(contacts))
-                    two_start = {slot: contacts[slot] for slot in two_slots}
-                    a, b = (two_start[s] for s in two_slots)
-                    two_start_dist = norm_distance(a, b, xr, yr)
-                    two_start_time = now
+                    begin_two(contacts, now)
                     continue
-
                 pos = next(iter(contacts.values()))
                 dx = abs(pos[0] - single_start[0]) / xr
                 dy = abs(pos[1] - single_start[1]) / yr
@@ -293,68 +404,73 @@ def main():
                     mode = "pass"
                 continue
 
-            # mode == "two"
+            # mode == "two": classify the intent before Firefox sees the
+            # sequence. Horizontal coherent movement wins over small incidental
+            # spacing changes, which is what the old version got wrong.
             if count != 2 or not two_slots or any(slot not in contacts for slot in two_slots):
                 flush_buffer()
                 mode = "pass" if count else "idle"
                 if count == 0:
-                    reset()
+                    reset(clear_state=False)
                 continue
 
-            p0 = two_start[two_slots[0]]
-            p1 = two_start[two_slots[1]]
-            c0 = contacts[two_slots[0]]
-            c1 = contacts[two_slots[1]]
+            dx, dy, d0x, d1x, d0y, d1y, scale_change = geometry(contacts)
+            same_x = d0x * d1x > 0 and min(abs(d0x), abs(d1x)) >= SWIPE_INTENT_FINGER_X
+            same_y = d0y * d1y > 0
+            opposite_x = d0x * d1x < 0
 
-            start_cx = (p0[0] + p1[0]) / 2
-            start_cy = (p0[1] + p1[1]) / 2
-            cx = (c0[0] + c1[0]) / 2
-            cy = (c0[1] + c1[1]) / 2
-            dx = (cx - start_cx) / xr
-            dy = (cy - start_cy) / yr
-
-            d0x = (c0[0] - p0[0]) / xr
-            d1x = (c1[0] - p1[0]) / xr
-            same_x_direction = d0x * d1x > 0 and min(abs(d0x), abs(d1x)) >= SWIPE_FINGER_X
-
-            dist = norm_distance(c0, c1, xr, yr)
-            if two_start_dist and two_start_dist > 0.005:
-                scale_change = abs(dist / two_start_dist - 1.0)
-            else:
-                scale_change = 0.0
-
-            horizontal = (
-                abs(dx) >= SWIPE_X
-                and abs(dx) > abs(dy) * 1.35
-                and same_x_direction
-                and scale_change <= MAX_SCALE_CHANGE_FOR_SWIPE
+            horizontal_intent = (
+                abs(dx) >= SWIPE_INTENT_X
+                and abs(dx) > abs(dy) * 1.10
+                and same_x
+            )
+            clear_pinch = (
+                abs(scale_change) >= PINCH_INTENT_SCALE
+                and (opposite_x or abs(dx) < SWIPE_INTENT_X * 0.75)
+            )
+            vertical_intent = (
+                abs(dy) >= VERTICAL_INTENT
+                and abs(dy) > abs(dx) * 1.12
+                and same_y
             )
 
-            if horizontal:
+            if horizontal_intent:
+                swipe_seq += 1
                 buffer = []
-                mode = "suppress"
-                switch_tab(1 if dx > 0 else -1)
+                mode = "swipe"
+                swipe_last_dx = dx
+                swipe_last_time = now
+                swipe_velocity = 0.0
+                publish_swipe("begin", dx, dy, 0.0, reason="horizontal-intent", force=True)
+                log(
+                    "swipe begin",
+                    f"dx={dx:.3f}",
+                    f"dy={dy:.3f}",
+                    f"scale={scale_change:.3f}",
+                )
                 continue
 
-            # Once the fingers clearly change their spacing, treat it as a real
-            # pinch and replay the exact buffered beginning to Firefox.
-            if scale_change >= PINCH_SCALE_CHANGE:
+            if clear_pinch:
+                log("pinch pass", f"scale={scale_change:.3f}", f"dx={dx:.3f}")
                 flush_buffer()
                 mode = "pass"
                 continue
 
-            if max(abs(dx), abs(dy)) >= DIAGONAL_FLUSH and abs(dy) >= abs(dx) * 0.9:
+            if vertical_intent:
                 flush_buffer()
                 mode = "pass"
                 continue
 
             if now - two_start_time >= CLASSIFY_TIMEOUT:
+                log("ambiguous pass", f"dx={dx:.3f}", f"dy={dy:.3f}", f"scale={scale_change:.3f}")
                 flush_buffer()
                 mode = "pass"
                 continue
 
     finally:
         try:
+            if mode == "swipe":
+                publish_swipe("end", swipe_last_dx, velocity=0.0, commit=False, reason="service-stop", force=True)
             dev.ungrab()
         except Exception:
             pass

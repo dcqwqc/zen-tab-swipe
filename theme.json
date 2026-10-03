@@ -1,7 +1,7 @@
 {
   "id": "qwqc-zen-tab-swipe",
   "name": "QWQC Two-Finger Tab Swipe",
-  "description": "Two-finger horizontal touchscreen swipes cycle tabs while real pinch zoom passes through unchanged.",
+  "description": "Progressive two-finger touchscreen tab switching with live tab previews and cancel/commit dragging.",
   "homepage": "https://github.com/dcqwqc/zen-tab-swipe",
   "preferences": "preferences.json",
   "scripts": {
@@ -17,7 +17,7 @@
   },
   "readme": "README.md",
   "author": "qwqc",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "tags": [
     "Zen",
     "Tabs",
