@@ -80,10 +80,10 @@
     }
 
     function desired() {
-      if (config.reverse) {
-        return { left: "Browser:NextTab", right: "Browser:PrevTab" };
-      }
-      return { left: "Browser:PrevTab", right: "Browser:NextTab" };
+      // The host touchpad observer owns horizontal tab gestures. Leaving these
+      // native commands active would make Firefox switch immediately underneath
+      // the progressive preview. Pinch preferences are intentionally untouched.
+      return { left: "", right: "" };
     }
 
     function setMapping(left, right, reason) {
@@ -115,6 +115,15 @@
 
     function clamp(value, min, max) {
       return Math.min(max, Math.max(min, value));
+    }
+
+    function blockUnderlyingWheel(event) {
+      if (!session || session.ending) return;
+      // Once the host has classified this as a horizontal tab drag, the raw
+      // libinput scroll stream must not move the page underneath the preview.
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
     }
 
     function visibleTabs() {
@@ -238,6 +247,7 @@
         }
       }
       try { activeSession.overlay?.remove(); } catch (_) {}
+      try { window.removeEventListener("wheel", blockUnderlyingWheel, { capture: true }); } catch (_) {}
       if (session === activeSession) session = null;
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", false);
     }
@@ -292,6 +302,7 @@
         ending: false
       };
 
+      window.addEventListener("wheel", blockUnderlyingWheel, { capture: true, passive: false });
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", true);
       Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "begin");
 
@@ -450,7 +461,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.3.0");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.0");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {

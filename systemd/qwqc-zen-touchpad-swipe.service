@@ -1,0 +1,13 @@
+[Unit]
+Description=QWQC Zen two-finger touchpad tab swipe
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/qwqc-zen-touchpad-swipe/venv/bin/python %h/.local/libexec/qwqc-zen-touchpad-swipe
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=graphical-session.target

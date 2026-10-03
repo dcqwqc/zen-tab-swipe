@@ -2,7 +2,7 @@
   {
     "type": "checkbox",
     "property": "mod.qwqc.tab_swipe.enabled",
-    "label": "Two-finger horizontal swipe cycles tabs",
+    "label": "Two-finger touchpad swipe switches tabs",
     "defaultValue": true
   },
   {
@@ -14,7 +14,7 @@
   {
     "type": "checkbox",
     "property": "mod.qwqc.tab_swipe.protect",
-    "label": "Keep Zen from restoring back/forward swipe navigation",
+    "label": "Disable Zen's native horizontal swipe while this mod is active",
     "defaultValue": true
   },
   {
