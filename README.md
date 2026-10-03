@@ -1,10 +1,10 @@
 # QWQC Two-Finger Tab Swipe
 
-A Sine mod for Zen Browser that changes Firefox's native horizontal swipe commands from page back/forward to tab previous/next.
+A Zen/Sine mod plus a small host-side touchscreen filter for convertible Linux devices.
 
-Default mapping follows the gesture literally:
+- Two fingers moving together horizontally: switch to the adjacent tab.
+- Finger spacing changing: pass the sequence through as native pinch zoom.
+- One-finger touch: pass through unchanged after a short second-finger grace window.
+- The filter only converts gestures while Zen is the active window.
 
-- **Swipe right → next/right tab**
-- **Swipe left → previous/left tab**
-
-Pinch zoom is untouched because this mod changes only `browser.gesture.swipe.left` and `browser.gesture.swipe.right`.
+The Sine settings control enable/disable and direction. A native Firefox swipe-pref mapping remains as a touchpad fallback, but direct touchscreen recognition is handled by the Wacom/evdev proxy because Firefox otherwise classifies these sequences as pinch zoom.

@@ -30,6 +30,7 @@
   }
 
   function createController() {
+    const configPath = PathUtils.join(PathUtils.profileDir, "chrome", "qwqc-tab-swipe-config.json");
     const original = {
       left: Services.prefs.getStringPref(LEFT_PREF, "Browser:BackOrBackDuplicate"),
       right: Services.prefs.getStringPref(RIGHT_PREF, "Browser:ForwardOrForwardDuplicate")
@@ -49,6 +50,21 @@
       config.reverse = Boolean(getPref(PREFS.reverse, DEFAULTS.reverse));
       config.protect = Boolean(getPref(PREFS.protect, DEFAULTS.protect));
       config.debug = Boolean(getPref(PREFS.debug, DEFAULTS.debug));
+    }
+
+    async function writeTouchscreenConfig(reason) {
+      try {
+        await IOUtils.writeJSON(configPath, {
+          enabled: config.enabled,
+          reverse: config.reverse,
+          updatedAt: Date.now(),
+          reason
+        });
+        Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.touchscreen_config", true);
+      } catch (error) {
+        Services.prefs.setStringPref("qwqc.tab_swipe.runtime.error", String(error));
+        log("touchscreen config write failed", error);
+      }
     }
 
     function desired() {
@@ -83,11 +99,13 @@
     }
 
     readConfig();
+    writeTouchscreenConfig("startup");
     applyMapping("startup");
 
     prefObserver = {
       observe() {
         readConfig();
+        writeTouchscreenConfig("settings-change");
         applyMapping("settings-change");
       }
     };

@@ -1,21 +1,34 @@
 {
   "id": "qwqc-zen-tab-swipe",
   "name": "QWQC Two-Finger Tab Swipe",
-  "description": "Uses Zen/Firefox's native horizontal swipe gesture to cycle tabs while leaving pinch zoom untouched.",
+  "description": "Two-finger horizontal touchscreen swipes cycle tabs while real pinch zoom passes through unchanged.",
   "homepage": "https://github.com/dcqwqc/zen-tab-swipe",
   "preferences": "preferences.json",
   "scripts": {
     "tab-swipe.uc.js": {
-      "include": ["chrome://browser/content/browser.xhtml", "chrome://browser/content/browser.xul"]
+      "include": [
+        "chrome://browser/content/browser.xhtml",
+        "chrome://browser/content/browser.xul"
+      ]
     }
   },
-  "style": {"chrome": "style.css"},
+  "style": {
+    "chrome": "style.css"
+  },
   "readme": "README.md",
   "author": "qwqc",
-  "version": "0.1.0",
-  "tags": ["Zen", "Tabs", "Touch", "Gesture", "Tablet"],
+  "version": "0.2.0",
+  "tags": [
+    "Zen",
+    "Tabs",
+    "Touch",
+    "Gesture",
+    "Tablet"
+  ],
   "createdAt": "2026-10-03",
   "updatedAt": "2026-10-03",
-  "fork": ["zen"],
+  "fork": [
+    "zen"
+  ],
   "supportsUnload": true
 }

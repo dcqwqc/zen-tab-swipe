@@ -44,4 +44,31 @@ mods[theme['id']]=theme
 mods_path.write_text(json.dumps(mods, indent=2)+'\n')
 PY
 
+RUNTIME="$HOME/.local/share/qwqc-zen-touch-filter"
+VENV="$RUNTIME/venv"
+mkdir -p "$RUNTIME" "$HOME/.local/libexec" "$HOME/.config/systemd/user"
+if [[ ! -x "$VENV/bin/python" ]]; then
+  uv venv "$VENV" >/dev/null
+fi
+if ! "$VENV/bin/python" -c 'import evdev' >/dev/null 2>&1; then
+  uv pip install --python "$VENV/bin/python" evdev >/dev/null
+fi
+cp "$ROOT/scripts/touchscreen-filter.py" "$HOME/.local/libexec/qwqc-zen-touch-filter"
+chmod 0755 "$HOME/.local/libexec/qwqc-zen-touch-filter"
+cp "$ROOT/systemd.service" "$HOME/.config/systemd/user/qwqc-zen-touch-filter.service"
+
+if [[ ! -f "$PROFILE/chrome/qwqc-tab-swipe-config.json" ]]; then
+  cat > "$PROFILE/chrome/qwqc-tab-swipe-config.json" <<'JSON'
+{
+  "enabled": true,
+  "reverse": false,
+  "reason": "host-default"
+}
+JSON
+fi
+
+systemctl --user daemon-reload
+systemctl --user enable --now qwqc-zen-touch-filter.service >/dev/null
+
 echo "Deployed $MOD_ID to $DEST"
+echo "Touchscreen filter: $(systemctl --user is-active qwqc-zen-touch-filter.service)"
