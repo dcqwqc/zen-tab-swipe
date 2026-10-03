@@ -1,0 +1,26 @@
+[
+  {
+    "type": "checkbox",
+    "property": "mod.qwqc.tab_swipe.enabled",
+    "label": "Two-finger horizontal swipe cycles tabs",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "property": "mod.qwqc.tab_swipe.reverse",
+    "label": "Reverse swipe direction",
+    "defaultValue": false
+  },
+  {
+    "type": "checkbox",
+    "property": "mod.qwqc.tab_swipe.protect",
+    "label": "Keep Zen from restoring back/forward swipe navigation",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "property": "mod.qwqc.tab_swipe.debug",
+    "label": "Debug logging",
+    "defaultValue": false
+  }
+]
