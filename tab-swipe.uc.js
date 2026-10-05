@@ -343,11 +343,11 @@
         targetForPhysicalSign(selected, -1),
         targetForPhysicalSign(selected, +1)
       ].filter(Boolean);
-      for (const tab of new Set(tabs)) captureThumbnail(tab);
+      for (const tab of new Set(tabs)) { if (!thumbnailUrls.has(tab)) captureThumbnail(tab); }
       Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
     }
 
-    function schedulePrewarm(delay = 100) {
+    function schedulePrewarm(delay = 300) {
       if (prewarmTimer) window.clearTimeout(prewarmTimer);
       prewarmTimer = window.setTimeout(() => {
         prewarmTimer = 0;
@@ -361,7 +361,7 @@
       try { window.removeEventListener("wheel", blockUnderlyingWheel, { capture: true }); } catch (_) {}
       if (session === activeSession) session = null;
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", false);
-      if (!destroyed) schedulePrewarm(80);
+      if (!destroyed) schedulePrewarm(300);
     }
 
     function startPreview(state) {
@@ -418,12 +418,9 @@
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", true);
       Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "begin");
 
-      // Cached snapshots are painted synchronously on panel creation. Refresh
-      // them in the background without ever replacing a good frame with the
-      // dark fallback.
-      captureThumbnail(startTab, currentPanel);
-      if (leftTarget) captureThumbnail(leftTarget, leftPanel);
-      if (rightTarget) captureThumbnail(rightTarget, rightPanel);
+      // The gesture hot path must stay compositor-only. makePanel() already
+      // paints any prewarmed frame synchronously; do not capture/decode pages
+      // here because PageThumbs work causes a visible hitch on the first frames.
       renderProgress(session.lastDelta);
     }
 
@@ -557,7 +554,7 @@
       }
     }
 
-    const onTabSelect = () => schedulePrewarm(60);
+    const onTabSelect = () => schedulePrewarm(300);
     const onTabClose = event => dropThumbnail(event.target);
 
     readConfig();
@@ -566,7 +563,7 @@
     pollTimer = window.setInterval(pollSwipeState, POLL_MS);
     gBrowser?.tabContainer?.addEventListener("TabSelect", onTabSelect);
     gBrowser?.tabContainer?.addEventListener("TabClose", onTabClose);
-    schedulePrewarm(120);
+    schedulePrewarm(450);
 
     prefObserver = {
       observe() {
@@ -574,7 +571,7 @@
         writeTouchscreenConfig("settings-change");
         applyMapping("settings-change");
         if (!config.enabled) cleanupSession();
-        else schedulePrewarm(60);
+        else schedulePrewarm(300);
       }
     };
     Services.prefs.addObserver(PREF_BRANCH, prefObserver);
@@ -590,7 +587,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.3");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.4");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
