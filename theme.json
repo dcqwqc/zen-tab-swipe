@@ -1,7 +1,7 @@
 {
   "id": "qwqc-zen-tab-swipe",
   "name": "QWQC Two-Finger Tab Swipe",
-  "description": "Continuous cyclic two-finger tab carousel for touchpad and touchscreen with full-page drag, cancel, and commit.",
+  "description": "Original v0.4.3-style progressive masked tab swipe for touchpad and touchscreen.",
   "homepage": "https://github.com/dcqwqc/zen-tab-swipe",
   "preferences": "preferences.json",
   "scripts": {
@@ -17,7 +17,7 @@
   },
   "readme": "README.md",
   "author": "qwqc",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "tags": [
     "Zen",
     "Tabs",
