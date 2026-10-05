@@ -19,7 +19,7 @@
   };
   const DEFAULTS = { enabled: true, reverse: false, protect: true, debug: false };
   const FULL_DRAG_DISTANCE = 0.46;
-  const POLL_MS = 16;
+  const POLL_MS = 4;
   const ANIM_MS = 210;
   const THUMBNAIL_CACHE_LIMIT = 10;
   const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -50,8 +50,8 @@
     let destroyed = false;
     let pollTimer = 0;
     let polling = false;
-    let lastStateMtime = -1;
-    let lastStateSeq = -1;
+    let lastStateStamp = "";
+    let lastStateKey = "";
     let session = null;
     const thumbnailUrls = new Map();
     const thumbnailImages = new Map();
@@ -122,6 +122,9 @@
       return Math.min(max, Math.max(min, value));
     }
 
+    function swipeStateKey(state) {
+      return `${state?.source || "unknown"}:${state?.seq}`;
+    }
     function blockUnderlyingWheel(event) {
       if (!session || session.ending) return;
       // Once the host has classified this as a horizontal tab drag, the raw
@@ -409,6 +412,8 @@
 
       session = {
         seq: state.seq,
+        key: swipeStateKey(state),
+        source: state.source || "unknown",
         startTab,
         leftTarget,
         rightTarget,
@@ -479,7 +484,7 @@
     }
 
     function finishPreview(state) {
-      if (!session || session.ending || state.seq !== session.seq) return;
+      if (!session || session.ending || swipeStateKey(state) !== session.key) return;
       session.ending = true;
       const delta = Number(state.delta) || session.lastDelta || 0;
       const targetData = targetDataForDelta(delta);
@@ -512,19 +517,19 @@
       // Switch the actual browser underneath the preview near the end of the
       // animation. The overlay then fades away onto the already-selected tab.
       window.setTimeout(() => {
-        if (!session || session.seq !== state.seq) return;
+        if (!session || session.key !== swipeStateKey(state)) return;
         try { gBrowser.selectedTab = targetData.tab; } catch (_) {}
       }, Math.max(70, ANIM_MS - 70));
 
       window.setTimeout(() => {
-        if (!session || session.seq !== state.seq) return;
+        if (!session || session.key !== swipeStateKey(state)) return;
         // Keep the fully-rendered target snapshot covering the live browser
         // for a short settle window. This prevents a one-frame black flash
         // while Gecko promotes/paints the newly selected tab.
         window.setTimeout(() => {
-          if (!session || session.seq !== state.seq) return;
+          if (!session || session.key !== swipeStateKey(state)) return;
           window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-            if (!session || session.seq !== state.seq) return;
+            if (!session || session.key !== swipeStateKey(state)) return;
             session.overlay.style.transition = "opacity 45ms linear";
             session.overlay.style.opacity = "0";
             window.setTimeout(() => cleanupSession(), 55);
@@ -538,24 +543,41 @@
       polling = true;
       try {
         if (!(await IOUtils.exists(statePath))) return;
-        const stat = await IOUtils.stat(statePath);
-        if (stat.lastModified === lastStateMtime) return;
-        lastStateMtime = stat.lastModified;
+
+        // Read the tiny state payload directly instead of gating on mtime.
+        // Gestures update faster than filesystem timestamp polling can reliably
+        // observe, so mtime-based dedupe can collapse most of the drag frames.
         const state = await IOUtils.readJSON(statePath);
         if (!state || typeof state.seq !== "number") return;
 
-        if (state.phase === "begin") {
-          if (state.seq !== lastStateSeq || !session) {
-            lastStateSeq = state.seq;
+        const key = swipeStateKey(state);
+        const stamp = `${key}:${state.phase || "unknown"}:${state.updatedAt ?? ""}`;
+        if (stamp === lastStateStamp) return;
+        lastStateStamp = stamp;
+
+        // A single-file producer may replace "begin" with the first "update"
+        // before this loop sees it. Any live update must therefore be capable
+        // of creating the preview session on its own. This makes the gesture
+        // progressive rather than an end-of-swipe tab switch.
+        if (state.phase === "begin" || state.phase === "update") {
+          if (!session || key !== session.key) {
+            lastStateKey = key;
             startPreview(state);
+          }
+          if (state.phase === "update" && session && key === session.key) {
+            renderProgress(state.delta);
           }
           return;
         }
-        if (!session || state.seq !== session.seq) return;
-        if (state.phase === "update") {
-          renderProgress(state.delta);
-        } else if (state.phase === "end") {
-          finishPreview(state);
+
+        if (state.phase === "end") {
+          // Even an extremely quick flick must not lose the visual handoff if
+          // begin/update were replaced before the browser observed them.
+          if (!session || key !== session.key) {
+            lastStateKey = key;
+            startPreview(state);
+          }
+          if (session && key === session.key) finishPreview(state);
         }
       } catch (error) {
         log("state poll failed", error);
@@ -597,7 +619,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.5.2");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.5.3");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
