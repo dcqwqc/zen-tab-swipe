@@ -272,15 +272,22 @@
             const scale = Math.min(1.35, window.devicePixelRatio || 1);
             canvas.width = Math.max(640, Math.min(1440, Math.round(cssWidth * scale)));
             canvas.height = Math.max(420, Math.round(canvas.width * (cssHeight / cssWidth)));
-            await PageThumbs.captureTabPreviewThumbnail(tab.linkedBrowser, canvas);
+            const captured = await PageThumbs.captureTabPreviewThumbnail(tab.linkedBrowser, canvas);
+            if (!captured) throw new Error("tab preview browser is not render-ready");
             blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
           } catch (previewError) {
             log("tab-preview capture fallback", tabTitle(tab, "tab"), previewError);
-            blob = await PageThumbs.captureToBlob(tab.linkedBrowser, {
-              fullViewport: true,
-              targetWidth: 1280,
-              preserveAspectRatio: true
-            });
+            const fallbackBrowser = tab.linkedBrowser;
+            // captureToBlob requires documentGlobal. Calling it for a discarded
+            // or torn-down browser creates the old black/error path. Keep the
+            // labeled carousel card instead until the tab is render-ready.
+            if (fallbackBrowser?.documentGlobal) {
+              blob = await PageThumbs.captureToBlob(fallbackBrowser, {
+                fullViewport: true,
+                targetWidth: 1280,
+                preserveAspectRatio: true
+              });
+            }
           }
 
           if (!blob || destroyed) return null;
@@ -605,7 +612,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.6.0");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.6.1");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
