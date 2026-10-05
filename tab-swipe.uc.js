@@ -143,7 +143,7 @@
       const tabs = visibleTabs();
       const index = tabs.indexOf(startTab);
       if (index < 0) return null;
-      const logicalStep = (config.reverse ? -1 : 1) * physicalSign;
+      const logicalStep = (config.reverse ? 1 : -1) * physicalSign;
       return tabs[index + logicalStep] || null;
     }
 
@@ -561,7 +561,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.1");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.2");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
