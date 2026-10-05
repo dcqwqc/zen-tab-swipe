@@ -21,7 +21,8 @@
   const FULL_DRAG_DISTANCE = 0.46;
   const POLL_MS = 4;
   const ANIM_MS = 210;
-  const THUMBNAIL_CACHE_LIMIT = 10;
+  const THUMBNAIL_CACHE_LIMIT = 32;
+  const CAROUSEL_RADIUS = 4;
   const HTML_NS = "http://www.w3.org/1999/xhtml";
 
   const { PageThumbs } = ChromeUtils.importESModule("resource://gre/modules/PageThumbs.sys.mjs");
@@ -142,13 +143,19 @@
       }
     }
 
-    function targetForPhysicalSign(startTab, physicalSign) {
-      if (!physicalSign) return null;
+    function tabForPhysicalSteps(startTab, physicalSteps) {
       const tabs = visibleTabs();
+      if (!tabs.length) return null;
       const index = tabs.indexOf(startTab);
       if (index < 0) return null;
-      const logicalStep = (config.reverse ? 1 : -1) * physicalSign;
-      return tabs[index + logicalStep] || null;
+      const logicalSteps = (config.reverse ? 1 : -1) * Number(physicalSteps || 0);
+      const targetIndex = ((index + logicalSteps) % tabs.length + tabs.length) % tabs.length;
+      return tabs[targetIndex] || null;
+    }
+
+    function targetForPhysicalSign(startTab, physicalSign) {
+      if (!physicalSign) return null;
+      return tabForPhysicalSteps(startTab, physicalSign);
     }
 
     function tabTitle(tab, fallback) {
@@ -195,14 +202,14 @@
       Object.assign(fallback.style, {
         position: "absolute",
         inset: "0",
-        display: tab ? "none" : "flex",
+        display: "flex",
         alignItems: "center",
         justifyContent: "center",
         flexDirection: "column",
         gap: "10px",
         padding: "36px",
         color: "rgba(255,255,255,.88)",
-        background: "linear-gradient(145deg, rgb(23 23 23), rgb(10 10 10))",
+        background: "linear-gradient(145deg, rgb(38 38 43), rgb(25 25 30))",
         font: "500 16px system-ui, sans-serif",
         textAlign: "center"
       });
@@ -345,15 +352,19 @@
       }
     }
 
-    function prewarmNeighbors() {
+    async function prewarmNeighbors() {
       if (destroyed || !config.enabled || session || !gBrowser?.selectedTab) return;
       const selected = gBrowser.selectedTab;
-      const tabs = [
-        selected,
-        targetForPhysicalSign(selected, -1),
-        targetForPhysicalSign(selected, +1)
-      ].filter(Boolean);
-      for (const tab of new Set(tabs)) captureThumbnail(tab);
+      const ordered = [selected];
+      for (let step = 1; step <= CAROUSEL_RADIUS; step++) {
+        ordered.push(tabForPhysicalSteps(selected, step));
+        ordered.push(tabForPhysicalSteps(selected, -step));
+      }
+      ordered.push(...visibleTabs());
+      for (const tab of [...new Set(ordered.filter(Boolean))]) {
+        if (destroyed || session) break;
+        if (!thumbnailUrls.has(tab)) await captureThumbnail(tab);
+      }
       Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
     }
 
@@ -381,10 +392,9 @@
       const startTab = gBrowser.selectedTab;
       const browser = gBrowser.selectedBrowser;
       const rect = browser.getBoundingClientRect();
-      if (rect.width < 80 || rect.height < 80) return;
+      const tabs = visibleTabs();
+      if (rect.width < 80 || rect.height < 80 || !tabs.length) return;
 
-      const rightTarget = targetForPhysicalSign(startTab, +1);
-      const leftTarget = targetForPhysicalSign(startTab, -1);
       const overlay = html("div");
       overlay.id = "qwqc-tab-swipe-preview";
       Object.assign(overlay.style, {
@@ -402,12 +412,31 @@
         contain: "layout paint size style"
       });
 
-      const leftPanel = makePanel(leftTarget, "No tab on this side");
-      const rightPanel = makePanel(rightTarget, "No tab on this side");
-      const currentPanel = makePanel(startTab, tabTitle(startTab, "Current tab"));
-      leftPanel.style.visibility = "hidden";
-      rightPanel.style.visibility = "hidden";
-      overlay.append(leftPanel, rightPanel, currentPanel);
+      const track = html("div");
+      track.className = "qwqc-tab-swipe-track";
+      Object.assign(track.style, {
+        position: "absolute",
+        inset: "0",
+        transform: "translate3d(0,0,0)",
+        willChange: "transform"
+      });
+
+      const panels = new Map();
+      for (let slot = -CAROUSEL_RADIUS; slot <= CAROUSEL_RADIUS; slot++) {
+        const tab = tabForPhysicalSteps(startTab, -slot);
+        const panel = makePanel(tab, tabTitle(tab, "Tab"));
+        Object.assign(panel.style, {
+          inset: "0 auto 0 0",
+          left: `${slot * 100}%`,
+          width: "100%",
+          height: "100%",
+          transform: "translate3d(0,0,0)",
+          visibility: "visible"
+        });
+        panels.set(slot, panel);
+        track.append(panel);
+      }
+      overlay.append(track);
       document.documentElement.append(overlay);
 
       session = {
@@ -415,14 +444,12 @@
         key: swipeStateKey(state),
         source: state.source || "unknown",
         startTab,
-        leftTarget,
-        rightTarget,
+        tabs,
         overlay,
-        currentPanel,
-        leftPanel,
-        rightPanel,
+        track,
+        panels,
         lastDelta: Number(state.delta) || 0,
-        activeTarget: null,
+        lastPages: 0,
         ending: false
       };
 
@@ -430,102 +457,61 @@
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", true);
       Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "begin");
 
-      // Cached snapshots are painted synchronously on panel creation. Refresh
-      // them in the background without ever replacing a good frame with the
-      // dark fallback.
-      captureThumbnail(startTab, currentPanel);
-      if (leftTarget) captureThumbnail(leftTarget, leftPanel);
-      if (rightTarget) captureThumbnail(rightTarget, rightPanel);
-      renderProgress(session.lastDelta);
-    }
-
-    function targetDataForDelta(delta) {
-      if (!session) return null;
-      const physicalSign = delta > 0 ? 1 : delta < 0 ? -1 : 0;
-      if (!physicalSign) return null;
-      if (physicalSign > 0) {
-        return { sign: 1, tab: session.rightTarget, panel: session.rightPanel };
+      // Every visible slot belongs to one continuous strip. Cached frames are
+      // shown immediately; missing frames render a labeled card and are filled
+      // asynchronously, never as an empty black panel.
+      for (const panel of panels.values()) {
+        const tab = panel._qwqcTab;
+        if (tab) void captureThumbnail(tab, panel);
       }
-      return { sign: -1, tab: session.leftTarget, panel: session.leftPanel };
+      renderProgress(session.lastDelta);
     }
 
     function renderProgress(delta) {
       if (!session || session.ending) return;
-      delta = clamp(Number(delta) || 0, -FULL_DRAG_DISTANCE * 1.2, FULL_DRAG_DISTANCE * 1.2);
-      session.lastDelta = delta;
-      const targetData = targetDataForDelta(delta);
-      const physicalSign = targetData?.sign || 0;
-      let visual = clamp(delta / FULL_DRAG_DISTANCE, -1, 1);
-
-      // At an edge there is no target page. Keep a small elastic pull instead
-      // of letting the current page disappear into empty space.
-      if (physicalSign && !targetData.tab) visual *= 0.18;
-
-      const x = visual * 100;
-      session.currentPanel.style.transition = "none";
-      session.currentPanel.style.transform = `translate3d(${x}%,0,0)`;
-
-      for (const data of [
-        { sign: 1, tab: session.rightTarget, panel: session.rightPanel },
-        { sign: -1, tab: session.leftTarget, panel: session.leftPanel }
-      ]) {
-        const isActive = data.sign === physicalSign;
-        data.panel.style.visibility = isActive ? "visible" : "hidden";
-        data.panel.style.transition = "none";
-        if (isActive) {
-          const start = data.sign > 0 ? -100 : 100;
-          data.panel.style.transform = `translate3d(${start + x}%,0,0)`;
-          data.panel.style.filter = data.tab ? "none" : "brightness(.72)";
-        }
-      }
-      session.activeTarget = targetData;
+      const maxPages = CAROUSEL_RADIUS - 0.02;
+      const pages = clamp((Number(delta) || 0) / FULL_DRAG_DISTANCE, -maxPages, maxPages);
+      session.lastDelta = Number(delta) || 0;
+      session.lastPages = pages;
+      session.track.style.transition = "none";
+      session.track.style.transform = `translate3d(${pages * 100}%,0,0)`;
       Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "drag");
-      Services.prefs.setIntPref("qwqc.tab_swipe.runtime.preview_percent", Math.round(Math.abs(visual) * 100));
+      Services.prefs.setIntPref("qwqc.tab_swipe.runtime.preview_percent", Math.round(Math.abs(pages) * 100));
+      Services.prefs.setIntPref("qwqc.tab_swipe.runtime.carousel_page", Math.round(pages));
     }
 
     function finishPreview(state) {
       if (!session || session.ending || swipeStateKey(state) !== session.key) return;
       session.ending = true;
-      const delta = Number(state.delta) || session.lastDelta || 0;
-      const targetData = targetDataForDelta(delta);
-      const shouldCommit = Boolean(state.commit && targetData?.tab);
-      const sign = targetData?.sign || (delta >= 0 ? 1 : -1);
+      const pages = Number.isFinite(session.lastPages)
+        ? session.lastPages
+        : (Number(state.delta) || 0) / FULL_DRAG_DISTANCE;
+      const sign = pages > 0 ? 1 : pages < 0 ? -1 : ((Number(state.delta) || 0) >= 0 ? 1 : -1);
+      let physicalSteps = sign * Math.max(1, Math.round(Math.abs(pages)));
+      physicalSteps = Math.trunc(clamp(physicalSteps, -(CAROUSEL_RADIUS - 1), CAROUSEL_RADIUS - 1));
+      const targetTab = tabForPhysicalSteps(session.startTab, physicalSteps);
+      const shouldCommit = Boolean(state.commit && targetTab && targetTab !== session.startTab);
       const easing = "cubic-bezier(.2,.82,.22,1)";
       const transition = `transform ${ANIM_MS}ms ${easing}, opacity ${ANIM_MS}ms ease`;
-
-      session.currentPanel.style.transition = transition;
-      session.leftPanel.style.transition = transition;
-      session.rightPanel.style.transition = transition;
+      session.track.style.transition = transition;
 
       if (!shouldCommit) {
-        session.currentPanel.style.transform = "translate3d(0,0,0)";
-        if (targetData?.panel) {
-          const rest = sign > 0 ? -100 : 100;
-          targetData.panel.style.transform = `translate3d(${rest}%,0,0)`;
-        }
+        session.track.style.transform = "translate3d(0,0,0)";
         Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "cancel");
         window.setTimeout(() => cleanupSession(), ANIM_MS + 25);
         return;
       }
 
-      const targetPanel = targetData.panel;
-      targetPanel.style.visibility = "visible";
-      targetPanel.style.transform = "translate3d(0,0,0)";
-      session.currentPanel.style.transform = `translate3d(${sign * 105}%,0,0)`;
+      session.track.style.transform = `translate3d(${physicalSteps * 100}%,0,0)`;
       Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "commit");
 
-      // Switch the actual browser underneath the preview near the end of the
-      // animation. The overlay then fades away onto the already-selected tab.
       window.setTimeout(() => {
         if (!session || session.key !== swipeStateKey(state)) return;
-        try { gBrowser.selectedTab = targetData.tab; } catch (_) {}
+        try { gBrowser.selectedTab = targetTab; } catch (_) {}
       }, Math.max(70, ANIM_MS - 70));
 
       window.setTimeout(() => {
         if (!session || session.key !== swipeStateKey(state)) return;
-        // Keep the fully-rendered target snapshot covering the live browser
-        // for a short settle window. This prevents a one-frame black flash
-        // while Gecko promotes/paints the newly selected tab.
         window.setTimeout(() => {
           if (!session || session.key !== swipeStateKey(state)) return;
           window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
@@ -619,7 +605,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.5.3");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.6.0");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
