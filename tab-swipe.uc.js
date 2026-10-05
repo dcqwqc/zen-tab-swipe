@@ -21,6 +21,7 @@
   const FULL_DRAG_DISTANCE = 0.46;
   const POLL_MS = 16;
   const ANIM_MS = 210;
+  const THUMBNAIL_CACHE_LIMIT = 10;
   const HTML_NS = "http://www.w3.org/1999/xhtml";
 
   const { PageThumbs } = ChromeUtils.importESModule("resource://gre/modules/PageThumbs.sys.mjs");
@@ -52,6 +53,9 @@
     let lastStateMtime = -1;
     let lastStateSeq = -1;
     let session = null;
+    const thumbnailUrls = new Map();
+    const thumbnailCaptures = new Map();
+    let prewarmTimer = 0;
 
     const log = (...args) => {
       if (config.debug) console.debug("[QWQC Tab Swipe]", ...args);
@@ -147,6 +151,25 @@
       return tab?.label || tab?.getAttribute?.("label") || fallback;
     }
 
+    function applyThumbnailToPanel(panel, tab, url, animateFallback = true) {
+      if (!panel || !url || panel._qwqcTab !== tab) return;
+      panel.style.backgroundImage = `url("${url}")`;
+      const fallback = panel._qwqcFallback;
+      if (!fallback) return;
+      if (!animateFallback || fallback.style.display === "none") {
+        fallback.style.display = "none";
+        fallback.style.opacity = "0";
+        return;
+      }
+      fallback.style.transition = "opacity 80ms linear";
+      fallback.style.opacity = "0";
+      window.setTimeout(() => {
+        if (panel.isConnected && panel._qwqcTab === tab && panel._qwqcFallback === fallback) {
+          fallback.style.display = "none";
+        }
+      }, 90);
+    }
+
     function makePanel(tab, fallbackTitle) {
       const panel = html("div");
       panel.className = "qwqc-tab-swipe-panel";
@@ -193,63 +216,132 @@
       fallback.append(label);
       panel.append(fallback);
       panel._qwqcFallback = fallback;
-      panel._qwqcBlobUrl = null;
+      panel._qwqcTab = tab;
+
+      const cachedUrl = tab ? thumbnailUrls.get(tab) : null;
+      if (cachedUrl) {
+        thumbnailUrls.delete(tab);
+        thumbnailUrls.set(tab, cachedUrl);
+        applyThumbnailToPanel(panel, tab, cachedUrl, false);
+        Services.prefs.setIntPref(
+          "qwqc.tab_swipe.runtime.thumbnail_cache_hits",
+          Services.prefs.getIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_hits", 0) + 1
+        );
+      } else if (tab) {
+        Services.prefs.setIntPref(
+          "qwqc.tab_swipe.runtime.thumbnail_cache_misses",
+          Services.prefs.getIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_misses", 0) + 1
+        );
+      }
       return panel;
     }
 
-    async function captureIntoPanel(tab, panel) {
-      if (!tab?.linkedBrowser || !panel || destroyed) return;
-      try {
-        let blob = null;
-        try {
-          const rect = panel.getBoundingClientRect();
-          const canvas = html("canvas");
-          const cssWidth = Math.max(320, rect.width || 960);
-          const cssHeight = Math.max(240, rect.height || 600);
-          const scale = Math.min(1.35, window.devicePixelRatio || 1);
-          canvas.width = Math.max(640, Math.min(1440, Math.round(cssWidth * scale)));
-          canvas.height = Math.max(420, Math.round(canvas.width * (cssHeight / cssWidth)));
-          await PageThumbs.captureTabPreviewThumbnail(tab.linkedBrowser, canvas);
-          blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
-        } catch (previewError) {
-          log("tab-preview capture fallback", tabTitle(tab, "tab"), previewError);
-          blob = await PageThumbs.captureToBlob(tab.linkedBrowser, {
-            fullViewport: true,
-            targetWidth: 1280,
-            preserveAspectRatio: true
-          });
-        }
-        if (!blob || destroyed || !panel.isConnected) return;
-        const url = URL.createObjectURL(blob);
-        if (panel._qwqcBlobUrl) URL.revokeObjectURL(panel._qwqcBlobUrl);
-        panel._qwqcBlobUrl = url;
-        panel.style.backgroundImage = `url("${url}")`;
-        Services.prefs.setIntPref(
-          "qwqc.tab_swipe.runtime.thumbnail_success",
-          Services.prefs.getIntPref("qwqc.tab_swipe.runtime.thumbnail_success", 0) + 1
-        );
-        if (panel._qwqcFallback) {
-          panel._qwqcFallback.style.opacity = "0";
-          panel._qwqcFallback.style.transition = "opacity 80ms linear";
-        }
-      } catch (error) {
-        Services.prefs.setStringPref("qwqc.tab_swipe.runtime.thumbnail_error", String(error));
-        log("thumbnail failed", tabTitle(tab, "tab"), error);
+    async function captureThumbnail(tab, panel = null) {
+      if (!tab?.linkedBrowser || destroyed) return null;
+      const hadCached = thumbnailUrls.has(tab);
+
+      let capture = thumbnailCaptures.get(tab);
+      if (!capture) {
+        capture = (async () => {
+          let blob = null;
+          try {
+            const rect = panel?.isConnected
+              ? panel.getBoundingClientRect()
+              : gBrowser?.selectedBrowser?.getBoundingClientRect?.();
+            const canvas = html("canvas");
+            const cssWidth = Math.max(320, rect?.width || 960);
+            const cssHeight = Math.max(240, rect?.height || 600);
+            const scale = Math.min(1.35, window.devicePixelRatio || 1);
+            canvas.width = Math.max(640, Math.min(1440, Math.round(cssWidth * scale)));
+            canvas.height = Math.max(420, Math.round(canvas.width * (cssHeight / cssWidth)));
+            await PageThumbs.captureTabPreviewThumbnail(tab.linkedBrowser, canvas);
+            blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+          } catch (previewError) {
+            log("tab-preview capture fallback", tabTitle(tab, "tab"), previewError);
+            blob = await PageThumbs.captureToBlob(tab.linkedBrowser, {
+              fullViewport: true,
+              targetWidth: 1280,
+              preserveAspectRatio: true
+            });
+          }
+
+          if (!blob || destroyed) return null;
+          const url = URL.createObjectURL(blob);
+          const previousUrl = thumbnailUrls.get(tab);
+          thumbnailUrls.delete(tab);
+          thumbnailUrls.set(tab, url);
+          while (thumbnailUrls.size > THUMBNAIL_CACHE_LIMIT) {
+            const oldestTab = thumbnailUrls.keys().next().value;
+            const oldestUrl = thumbnailUrls.get(oldestTab);
+            thumbnailUrls.delete(oldestTab);
+            if (oldestUrl && oldestUrl !== url) {
+              try { URL.revokeObjectURL(oldestUrl); } catch (_) {}
+            }
+          }
+          Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
+          if (previousUrl && previousUrl !== url) {
+            window.setTimeout(() => {
+              try { URL.revokeObjectURL(previousUrl); } catch (_) {}
+            }, 1000);
+          }
+          Services.prefs.setIntPref(
+            "qwqc.tab_swipe.runtime.thumbnail_success",
+            Services.prefs.getIntPref("qwqc.tab_swipe.runtime.thumbnail_success", 0) + 1
+          );
+          return url;
+        })().catch(error => {
+          Services.prefs.setStringPref("qwqc.tab_swipe.runtime.thumbnail_error", String(error));
+          log("thumbnail failed", tabTitle(tab, "tab"), error);
+          return null;
+        }).finally(() => {
+          thumbnailCaptures.delete(tab);
+        });
+        thumbnailCaptures.set(tab, capture);
       }
+
+      const url = await capture;
+      if (url && panel?.isConnected && panel._qwqcTab === tab) {
+        applyThumbnailToPanel(panel, tab, url, !hadCached);
+      }
+      return url;
+    }
+
+    function dropThumbnail(tab) {
+      const url = thumbnailUrls.get(tab);
+      thumbnailUrls.delete(tab);
+      Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
+      if (url) {
+        try { URL.revokeObjectURL(url); } catch (_) {}
+      }
+    }
+
+    function prewarmNeighbors() {
+      if (destroyed || !config.enabled || session || !gBrowser?.selectedTab) return;
+      const selected = gBrowser.selectedTab;
+      const tabs = [
+        selected,
+        targetForPhysicalSign(selected, -1),
+        targetForPhysicalSign(selected, +1)
+      ].filter(Boolean);
+      for (const tab of new Set(tabs)) captureThumbnail(tab);
+      Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
+    }
+
+    function schedulePrewarm(delay = 100) {
+      if (prewarmTimer) window.clearTimeout(prewarmTimer);
+      prewarmTimer = window.setTimeout(() => {
+        prewarmTimer = 0;
+        prewarmNeighbors();
+      }, delay);
     }
 
     function cleanupSession(activeSession = session) {
       if (!activeSession) return;
-      for (const panel of [activeSession.currentPanel, activeSession.leftPanel, activeSession.rightPanel]) {
-        if (panel?._qwqcBlobUrl) {
-          try { URL.revokeObjectURL(panel._qwqcBlobUrl); } catch (_) {}
-          panel._qwqcBlobUrl = null;
-        }
-      }
       try { activeSession.overlay?.remove(); } catch (_) {}
       try { window.removeEventListener("wheel", blockUnderlyingWheel, { capture: true }); } catch (_) {}
       if (session === activeSession) session = null;
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", false);
+      if (!destroyed) schedulePrewarm(80);
     }
 
     function startPreview(state) {
@@ -306,11 +398,12 @@
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", true);
       Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "begin");
 
-      // Capture all three in parallel. The fallback card is visible for the few
-      // frames before the screenshot arrives, so dragging starts immediately.
-      captureIntoPanel(startTab, currentPanel);
-      if (leftTarget) captureIntoPanel(leftTarget, leftPanel);
-      if (rightTarget) captureIntoPanel(rightTarget, rightPanel);
+      // Cached snapshots are painted synchronously on panel creation. Refresh
+      // them in the background without ever replacing a good frame with the
+      // dark fallback.
+      captureThumbnail(startTab, currentPanel);
+      if (leftTarget) captureThumbnail(leftTarget, leftPanel);
+      if (rightTarget) captureThumbnail(rightTarget, rightPanel);
       renderProgress(session.lastDelta);
     }
 
@@ -435,10 +528,16 @@
       }
     }
 
+    const onTabSelect = () => schedulePrewarm(60);
+    const onTabClose = event => dropThumbnail(event.target);
+
     readConfig();
     writeTouchscreenConfig("startup");
     applyMapping("startup");
     pollTimer = window.setInterval(pollSwipeState, POLL_MS);
+    gBrowser?.tabContainer?.addEventListener("TabSelect", onTabSelect);
+    gBrowser?.tabContainer?.addEventListener("TabClose", onTabClose);
+    schedulePrewarm(120);
 
     prefObserver = {
       observe() {
@@ -446,6 +545,7 @@
         writeTouchscreenConfig("settings-change");
         applyMapping("settings-change");
         if (!config.enabled) cleanupSession();
+        else schedulePrewarm(60);
       }
     };
     Services.prefs.addObserver(PREF_BRANCH, prefObserver);
@@ -461,14 +561,21 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.0");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.1");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
       if (destroyed) return;
       destroyed = true;
       if (pollTimer) window.clearInterval(pollTimer);
+      if (prewarmTimer) window.clearTimeout(prewarmTimer);
       cleanupSession();
+      try { gBrowser?.tabContainer?.removeEventListener("TabSelect", onTabSelect); } catch (_) {}
+      try { gBrowser?.tabContainer?.removeEventListener("TabClose", onTabClose); } catch (_) {}
+      for (const url of thumbnailUrls.values()) {
+        try { URL.revokeObjectURL(url); } catch (_) {}
+      }
+      thumbnailUrls.clear();
       try { Services.prefs.removeObserver(PREF_BRANCH, prefObserver); } catch (_) {}
       try { Services.prefs.removeObserver(LEFT_PREF, gestureObserver); } catch (_) {}
       try { Services.prefs.removeObserver(RIGHT_PREF, gestureObserver); } catch (_) {}

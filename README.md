@@ -7,6 +7,7 @@ Progressive **two-finger touchpad** tab switching for Zen Browser.
 - Put two fingers on the touchpad and move them together horizontally.
 - The current page follows the gesture continuously.
 - The neighboring tab appears behind it using Firefox's real tab-preview capture.
+- Recently used neighboring tabs are prewarmed and cached, so an already-rendered tab appears immediately instead of flashing the dark title fallback.
 - Release early and it springs back.
 - Drag about 17% of the touchpad width (~20 mm on Mirai) or make a decisive flick to commit.
 - Two-finger vertical movement remains normal scrolling.
