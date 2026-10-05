@@ -18,8 +18,8 @@
     debug: `${PREF_BRANCH}debug`
   };
   const DEFAULTS = { enabled: true, reverse: false, protect: true, debug: false };
-  const FULL_DRAG_DISTANCE = 0.46;
-  const POLL_MS = 8;
+  const FULL_DRAG_DISTANCE = 0.24;
+  const POLL_MS = 4;
   const ANIM_MS = 210;
   const THUMBNAIL_CACHE_LIMIT = 16;
   const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -50,7 +50,7 @@
     let destroyed = false;
     let pollTimer = 0;
     let polling = false;
-    let lastStateMtime = -1;
+    let lastStateStamp = "";
     let lastStateKey = "";
     let session = null;
     const thumbnailUrls = new Map();
@@ -564,25 +564,41 @@
       polling = true;
       try {
         if (!(await IOUtils.exists(statePath))) return;
-        const stat = await IOUtils.stat(statePath);
-        if (stat.lastModified === lastStateMtime) return;
-        lastStateMtime = stat.lastModified;
+
+        // Read the tiny state payload directly instead of gating on mtime.
+        // Gestures update faster than filesystem timestamp polling can reliably
+        // observe, so mtime-based dedupe can collapse most of the drag frames.
         const state = await IOUtils.readJSON(statePath);
         if (!state || typeof state.seq !== "number") return;
 
         const key = swipeStateKey(state);
-        if (state.phase === "begin") {
-          if (key !== lastStateKey || !session) {
+        const stamp = `${key}:${state.phase || "unknown"}:${state.updatedAt ?? ""}`;
+        if (stamp === lastStateStamp) return;
+        lastStateStamp = stamp;
+
+        // A single-file producer may replace "begin" with the first "update"
+        // before this loop sees it. Any live update must therefore be capable
+        // of creating the preview session on its own. This makes the gesture
+        // progressive rather than an end-of-swipe tab switch.
+        if (state.phase === "begin" || state.phase === "update") {
+          if (!session || key !== session.key) {
             lastStateKey = key;
             startPreview(state);
           }
+          if (state.phase === "update" && session && key === session.key) {
+            renderProgress(state.delta);
+          }
           return;
         }
-        if (!session || key !== session.key) return;
-        if (state.phase === "update") {
-          renderProgress(state.delta);
-        } else if (state.phase === "end") {
-          finishPreview(state);
+
+        if (state.phase === "end") {
+          // Even an extremely quick flick must not lose the visual handoff if
+          // begin/update were replaced before the browser observed them.
+          if (!session || key !== session.key) {
+            lastStateKey = key;
+            startPreview(state);
+          }
+          if (session && key === session.key) finishPreview(state);
         }
       } catch (error) {
         log("state poll failed", error);
