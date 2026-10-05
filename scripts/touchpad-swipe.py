@@ -29,15 +29,15 @@ ABS_MT_POSITION_Y = 0x36
 ABS_MT_TRACKING_ID = 0x39
 
 # Touchpad-relative thresholds. Mirai's ELAN pad is ~118.7 mm wide.
-INTENT_X = 0.012          # ~1.4 mm of coherent horizontal movement
+INTENT_X = 0.018          # ~2.1 mm of coherent horizontal movement
 INTENT_FINGER_X = 0.010   # each finger must actually travel horizontally
 VERTICAL_REJECT = 0.020
 PINCH_REJECT_SCALE = 0.085
 CLASSIFY_TIMEOUT = 0.55
 COMMIT_DISTANCE = 0.17    # ~20 mm
-FAST_COMMIT_MIN = 0.075   # ~8.9 mm
-FAST_COMMIT_VELOCITY = 0.85
-STATE_THROTTLE = 0.008
+FAST_COMMIT_MIN = 0.065   # ~7.7 mm
+FAST_COMMIT_VELOCITY = 0.70
+STATE_THROTTLE = 0.010
 
 CONFIG = {"enabled": True, "reverse": False}
 CONFIG_MTIME: int | None = None
