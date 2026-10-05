@@ -18,7 +18,7 @@
     debug: `${PREF_BRANCH}debug`
   };
   const DEFAULTS = { enabled: true, reverse: false, protect: true, debug: false };
-  const FULL_DRAG_DISTANCE = 0.24;
+  const FULL_DRAG_DISTANCE = 0.46;
   const POLL_MS = 8;
   const ANIM_MS = 210;
   const THUMBNAIL_CACHE_LIMIT = 16;
@@ -241,9 +241,16 @@
       return panel;
     }
 
-    async function captureThumbnail(tab, panel = null) {
+    async function captureThumbnail(tab, panel = null, forceRefresh = false) {
       if (!tab?.linkedBrowser || destroyed) return null;
-      const hadCached = thumbnailUrls.has(tab);
+      const cachedUrl = thumbnailUrls.get(tab);
+      if (cachedUrl && !forceRefresh) {
+        if (panel?.isConnected && panel._qwqcTab === tab) {
+          applyThumbnailToPanel(panel, tab, cachedUrl, false);
+        }
+        return cachedUrl;
+      }
+      const hadCached = Boolean(cachedUrl);
 
       let capture = thumbnailCaptures.get(tab);
       if (!capture) {
@@ -433,9 +440,23 @@
       Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.preview_active", true);
       Services.prefs.setStringPref("qwqc.tab_swipe.runtime.preview_phase", "begin");
 
-      // The gesture hot path must stay compositor-only. makePanel() already
-      // paints any prewarmed frame synchronously; do not capture/decode pages
-      // here because PageThumbs work causes a visible hitch on the first frames.
+      // Reuse frozen frames immediately, exactly like the original interactive
+      // peeking behavior. If a frame is genuinely missing, wait two compositor
+      // frames before doing PageThumbs work so the drag itself starts smoothly.
+      const ensurePanelFrame = (tab, panel) => {
+        if (!tab) return;
+        if (thumbnailUrls.has(tab)) {
+          void captureThumbnail(tab, panel);
+          return;
+        }
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+          if (!session || session.ending || panel._qwqcTab !== tab) return;
+          void captureThumbnail(tab, panel);
+        }));
+      };
+      ensurePanelFrame(startTab, currentPanel);
+      ensurePanelFrame(leftTarget, leftPanel);
+      ensurePanelFrame(rightTarget, rightPanel);
       renderProgress(session.lastDelta);
     }
 
@@ -603,7 +624,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.5.0");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.5.1");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
