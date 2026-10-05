@@ -54,6 +54,7 @@
     let lastStateSeq = -1;
     let session = null;
     const thumbnailUrls = new Map();
+    const thumbnailImages = new Map();
     const thumbnailCaptures = new Map();
     let prewarmTimer = 0;
 
@@ -177,7 +178,7 @@
         position: "absolute",
         inset: "0",
         overflow: "hidden",
-        backgroundColor: "rgb(20 20 20)",
+        backgroundColor: tab ? "transparent" : "rgb(20 20 20)",
         backgroundPosition: "center",
         backgroundRepeat: "no-repeat",
         backgroundSize: "cover",
@@ -191,7 +192,7 @@
       Object.assign(fallback.style, {
         position: "absolute",
         inset: "0",
-        display: "flex",
+        display: tab ? "none" : "flex",
         alignItems: "center",
         justifyContent: "center",
         flexDirection: "column",
@@ -267,13 +268,30 @@
 
           if (!blob || destroyed) return null;
           const url = URL.createObjectURL(blob);
+          // Decode the blob before it can ever be used by a visible panel.
+          // Without this, Gecko can composite one dark frame while the CSS
+          // background image is still being decoded.
+          let preloader = null;
+          try {
+            preloader = html("img");
+            preloader.decoding = "sync";
+            preloader.src = url;
+            await preloader.decode();
+          } catch (_) {}
+          if (destroyed) {
+            try { URL.revokeObjectURL(url); } catch (_) {}
+            return null;
+          }
           const previousUrl = thumbnailUrls.get(tab);
+          const previousImage = thumbnailImages.get(tab);
           thumbnailUrls.delete(tab);
           thumbnailUrls.set(tab, url);
+          if (preloader) thumbnailImages.set(tab, preloader);
           while (thumbnailUrls.size > THUMBNAIL_CACHE_LIMIT) {
             const oldestTab = thumbnailUrls.keys().next().value;
             const oldestUrl = thumbnailUrls.get(oldestTab);
             thumbnailUrls.delete(oldestTab);
+            thumbnailImages.delete(oldestTab);
             if (oldestUrl && oldestUrl !== url) {
               try { URL.revokeObjectURL(oldestUrl); } catch (_) {}
             }
@@ -281,6 +299,7 @@
           Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
           if (previousUrl && previousUrl !== url) {
             window.setTimeout(() => {
+              void previousImage;
               try { URL.revokeObjectURL(previousUrl); } catch (_) {}
             }, 1000);
           }
@@ -309,6 +328,7 @@
     function dropThumbnail(tab) {
       const url = thumbnailUrls.get(tab);
       thumbnailUrls.delete(tab);
+      thumbnailImages.delete(tab);
       Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
       if (url) {
         try { URL.revokeObjectURL(url); } catch (_) {}
@@ -367,7 +387,7 @@
         overflow: "hidden",
         pointerEvents: "none",
         borderRadius: "8px",
-        background: "rgb(12 12 12)",
+        background: "transparent",
         boxShadow: "0 18px 56px rgba(0,0,0,.22)",
         contain: "layout paint size style"
       });
@@ -491,9 +511,18 @@
 
       window.setTimeout(() => {
         if (!session || session.seq !== state.seq) return;
-        session.overlay.style.transition = "opacity 75ms ease";
-        session.overlay.style.opacity = "0";
-        window.setTimeout(() => cleanupSession(), 85);
+        // Keep the fully-rendered target snapshot covering the live browser
+        // for a short settle window. This prevents a one-frame black flash
+        // while Gecko promotes/paints the newly selected tab.
+        window.setTimeout(() => {
+          if (!session || session.seq !== state.seq) return;
+          window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+            if (!session || session.seq !== state.seq) return;
+            session.overlay.style.transition = "opacity 45ms linear";
+            session.overlay.style.opacity = "0";
+            window.setTimeout(() => cleanupSession(), 55);
+          }));
+        }, 120);
       }, ANIM_MS);
     }
 
@@ -561,7 +590,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.2");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.3");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
@@ -576,6 +605,7 @@
         try { URL.revokeObjectURL(url); } catch (_) {}
       }
       thumbnailUrls.clear();
+      thumbnailImages.clear();
       try { Services.prefs.removeObserver(PREF_BRANCH, prefObserver); } catch (_) {}
       try { Services.prefs.removeObserver(LEFT_PREF, gestureObserver); } catch (_) {}
       try { Services.prefs.removeObserver(RIGHT_PREF, gestureObserver); } catch (_) {}
