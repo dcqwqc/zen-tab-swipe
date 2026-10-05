@@ -1,7 +1,7 @@
 {
   "id": "qwqc-zen-tab-swipe",
   "name": "QWQC Two-Finger Tab Swipe",
-  "description": "Progressive two-finger touchpad tab switching with live neighboring-tab previews, cancel, and commit dragging.",
+  "description": "Progressive two-finger touchpad and touchscreen tab switching with live neighboring-tab previews, cancel, and commit dragging.",
   "homepage": "https://github.com/dcqwqc/zen-tab-swipe",
   "preferences": "preferences.json",
   "scripts": {
@@ -17,11 +17,12 @@
   },
   "readme": "README.md",
   "author": "qwqc",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "tags": [
     "Zen",
     "Tabs",
     "Touchpad",
+    "Touchscreen",
     "Gesture",
     "Laptop"
   ],

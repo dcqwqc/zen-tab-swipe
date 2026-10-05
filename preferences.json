@@ -2,7 +2,7 @@
   {
     "type": "checkbox",
     "property": "mod.qwqc.tab_swipe.enabled",
-    "label": "Two-finger touchpad swipe switches tabs",
+    "label": "Two-finger touchpad and touchscreen swipe switches tabs",
     "defaultValue": true
   },
   {

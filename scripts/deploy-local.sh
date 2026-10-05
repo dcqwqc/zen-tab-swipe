@@ -56,7 +56,9 @@ if ! "$VENV/bin/python" -c 'import evdev' >/dev/null 2>&1; then
 fi
 
 install -m 0755 "$ROOT/scripts/touchpad-swipe.py" "$HOME/.local/libexec/qwqc-zen-touchpad-swipe"
+install -m 0755 "$ROOT/scripts/touchscreen-swipe.py" "$HOME/.local/libexec/qwqc-zen-touchscreen-swipe"
 install -m 0644 "$ROOT/systemd/qwqc-zen-touchpad-swipe.service" "$HOME/.config/systemd/user/qwqc-zen-touchpad-swipe.service"
+install -m 0644 "$ROOT/systemd/qwqc-zen-touchscreen-swipe.service" "$HOME/.config/systemd/user/qwqc-zen-touchscreen-swipe.service"
 
 if [[ ! -f "$PROFILE/chrome/qwqc-tab-swipe-config.json" ]]; then
   cat > "$PROFILE/chrome/qwqc-tab-swipe-config.json" <<'JSON'
@@ -68,14 +70,16 @@ if [[ ! -f "$PROFILE/chrome/qwqc-tab-swipe-config.json" ]]; then
 JSON
 fi
 
-# Migrate the previous direct-touchscreen prototype away completely.
+# Remove the legacy touchscreen service; the maintained touchscreen observer is installed below.
 systemctl --user disable --now qwqc-zen-touch-filter.service >/dev/null 2>&1 || true
 rm -f "$HOME/.config/systemd/user/qwqc-zen-touch-filter.service"
 rm -f "$HOME/.local/libexec/qwqc-zen-touch-filter"
 rm -rf "$HOME/.local/share/qwqc-zen-touch-filter"
 
 systemctl --user daemon-reload
-systemctl --user enable --now qwqc-zen-touchpad-swipe.service >/dev/null
+systemctl --user enable qwqc-zen-touchpad-swipe.service qwqc-zen-touchscreen-swipe.service >/dev/null
+systemctl --user restart qwqc-zen-touchpad-swipe.service qwqc-zen-touchscreen-swipe.service
 
 echo "Deployed $MOD_ID to $DEST"
 echo "Touchpad observer: $(systemctl --user is-active qwqc-zen-touchpad-swipe.service)"
+echo "Touchscreen observer: $(systemctl --user is-active qwqc-zen-touchscreen-swipe.service)"

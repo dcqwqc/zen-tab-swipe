@@ -1,0 +1,13 @@
+[Unit]
+Description=QWQC Zen touchscreen tab swipe
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/qwqc-zen-touchpad-swipe/venv/bin/python %h/.local/libexec/qwqc-zen-touchscreen-swipe
+Restart=on-failure
+RestartSec=1
+TimeoutStopSec=1
+
+[Install]
+WantedBy=default.target

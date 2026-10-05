@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name QWQC Two-Finger Tab Swipe
-// @description Progressive two-finger touchscreen tab switching with live page previews.
+// @description Progressive two-finger touchpad and touchscreen tab switching with live page previews.
 // @author qwqc
 // ==/UserScript==
 
@@ -18,10 +18,10 @@
     debug: `${PREF_BRANCH}debug`
   };
   const DEFAULTS = { enabled: true, reverse: false, protect: true, debug: false };
-  const FULL_DRAG_DISTANCE = 0.46;
-  const POLL_MS = 16;
+  const FULL_DRAG_DISTANCE = 0.24;
+  const POLL_MS = 8;
   const ANIM_MS = 210;
-  const THUMBNAIL_CACHE_LIMIT = 10;
+  const THUMBNAIL_CACHE_LIMIT = 16;
   const HTML_NS = "http://www.w3.org/1999/xhtml";
 
   const { PageThumbs } = ChromeUtils.importESModule("resource://gre/modules/PageThumbs.sys.mjs");
@@ -51,7 +51,7 @@
     let pollTimer = 0;
     let polling = false;
     let lastStateMtime = -1;
-    let lastStateSeq = -1;
+    let lastStateKey = "";
     let session = null;
     const thumbnailUrls = new Map();
     const thumbnailImages = new Map();
@@ -122,6 +122,10 @@
       return Math.min(max, Math.max(min, value));
     }
 
+
+    function swipeStateKey(state) {
+      return `${state?.source || "unknown"}:${state?.seq}`;
+    }
     function blockUnderlyingWheel(event) {
       if (!session || session.ending) return;
       // Once the host has classified this as a horizontal tab drag, the raw
@@ -335,15 +339,24 @@
       }
     }
 
-    function prewarmNeighbors() {
+    async function prewarmNeighbors() {
       if (destroyed || !config.enabled || session || !gBrowser?.selectedTab) return;
       const selected = gBrowser.selectedTab;
-      const tabs = [
+      const ordered = [
         selected,
         targetForPhysicalSign(selected, -1),
-        targetForPhysicalSign(selected, +1)
+        targetForPhysicalSign(selected, +1),
+        ...visibleTabs()
       ].filter(Boolean);
-      for (const tab of new Set(tabs)) { if (!thumbnailUrls.has(tab)) captureThumbnail(tab); }
+
+      // Fill missing frozen frames sequentially while idle. The gesture itself
+      // then only composites transforms and never waits on PageThumbs.
+      for (const tab of [...new Set(ordered)].slice(0, THUMBNAIL_CACHE_LIMIT)) {
+        if (destroyed || session) break;
+        if (thumbnailUrls.has(tab)) continue;
+        await captureThumbnail(tab);
+        await new Promise(resolve => window.setTimeout(resolve, 16));
+      }
       Services.prefs.setIntPref("qwqc.tab_swipe.runtime.thumbnail_cache_size", thumbnailUrls.size);
     }
 
@@ -402,6 +415,8 @@
 
       session = {
         seq: state.seq,
+        key: swipeStateKey(state),
+        source: state.source || "unknown",
         startTab,
         leftTarget,
         rightTarget,
@@ -469,7 +484,7 @@
     }
 
     function finishPreview(state) {
-      if (!session || session.ending || state.seq !== session.seq) return;
+      if (!session || session.ending || swipeStateKey(state) !== session.key) return;
       session.ending = true;
       const delta = Number(state.delta) || session.lastDelta || 0;
       const targetData = targetDataForDelta(delta);
@@ -502,19 +517,19 @@
       // Switch the actual browser underneath the preview near the end of the
       // animation. The overlay then fades away onto the already-selected tab.
       window.setTimeout(() => {
-        if (!session || session.seq !== state.seq) return;
+        if (!session || session.key !== swipeStateKey(state)) return;
         try { gBrowser.selectedTab = targetData.tab; } catch (_) {}
       }, Math.max(70, ANIM_MS - 70));
 
       window.setTimeout(() => {
-        if (!session || session.seq !== state.seq) return;
+        if (!session || session.key !== swipeStateKey(state)) return;
         // Keep the fully-rendered target snapshot covering the live browser
         // for a short settle window. This prevents a one-frame black flash
         // while Gecko promotes/paints the newly selected tab.
         window.setTimeout(() => {
-          if (!session || session.seq !== state.seq) return;
+          if (!session || session.key !== swipeStateKey(state)) return;
           window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-            if (!session || session.seq !== state.seq) return;
+            if (!session || session.key !== swipeStateKey(state)) return;
             session.overlay.style.transition = "opacity 45ms linear";
             session.overlay.style.opacity = "0";
             window.setTimeout(() => cleanupSession(), 55);
@@ -534,14 +549,15 @@
         const state = await IOUtils.readJSON(statePath);
         if (!state || typeof state.seq !== "number") return;
 
+        const key = swipeStateKey(state);
         if (state.phase === "begin") {
-          if (state.seq !== lastStateSeq || !session) {
-            lastStateSeq = state.seq;
+          if (key !== lastStateKey || !session) {
+            lastStateKey = key;
             startPreview(state);
           }
           return;
         }
-        if (!session || state.seq !== session.seq) return;
+        if (!session || key !== session.key) return;
         if (state.phase === "update") {
           renderProgress(state.delta);
         } else if (state.phase === "end") {
@@ -587,7 +603,7 @@
     Services.prefs.addObserver(RIGHT_PREF, gestureObserver);
 
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.loaded", true);
-    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.4.4");
+    Services.prefs.setStringPref("qwqc.tab_swipe.runtime.version", "0.5.0");
     Services.prefs.setBoolPref("qwqc.tab_swipe.runtime.progressive_preview", true);
 
     function destroy() {
