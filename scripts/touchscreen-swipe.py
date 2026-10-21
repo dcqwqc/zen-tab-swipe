@@ -4,6 +4,7 @@ import json
 import math
 import os
 import signal
+import select
 import subprocess
 import time
 from glob import glob
@@ -152,6 +153,12 @@ def single_touch_should_pass(dx: float, dy: float, elapsed: float) -> bool:
     return max(abs(dx), abs(dy)) >= SINGLE_MOVE_FLUSH or elapsed >= SECOND_FINGER_GRACE
 
 
+def should_grab_touchscreen(focused_zen: bool, enabled: bool, active_contact: bool,
+                            already_grabbed: bool) -> bool:
+    """Never switch delivery pathways in the middle of an active touch."""
+    return already_grabbed if active_contact else focused_zen and enabled
+
+
 def main():
     global RUNNING
 
@@ -172,8 +179,11 @@ def main():
         filtered_types=(ecodes.EV_SYN,),
     )
     time.sleep(0.35)
-    dev.grab()
-    log(f"grabbed {dev.path} ({dev.name}); virtual={ui.device}; range={xr}x{yr}")
+    # Apps other than Zen receive original hardware events directly. Exclusive
+    # capture is needed only for Zen's two-finger browser-tab gesture.
+    grabbed = False
+    last_capture_check = -999.0
+    log(f"watching {dev.path} ({dev.name}); virtual={ui.device}; range={xr}x{yr}")
 
     def stop(_sig, _frame):
         global RUNNING
@@ -294,10 +304,47 @@ def main():
         write_state(payload)
         last_state_write = now
 
+    def input_events():
+        # Time-bounded reads also let focus changes enable/disable the bridge
+        # while idle, without requiring a finger tap to wake the reader.
+        while RUNNING:
+            ready, _, _ = select.select([dev.fd], [], [], 0.10)
+            if ready:
+                yield from dev.read()
+            else:
+                yield None
+
+    def sync_capture():
+        nonlocal grabbed, last_capture_check
+        now = time.monotonic()
+        if mode != "idle" or active_contacts() or now - last_capture_check < 0.20:
+            return
+        last_capture_check = now
+        refresh_config()
+        want = should_grab_touchscreen(
+            zen_active(), CONFIG.get("enabled", True), False, grabbed)
+        if want == grabbed:
+            return
+        try:
+            if want:
+                dev.grab()
+            else:
+                dev.ungrab()
+            grabbed = want
+            log("input path -> " + ("Zen gesture bridge" if grabbed else "native touchscreen"))
+        except OSError as error:
+            # Never synthesize a second stream if the grab could not be
+            # acquired (Aseprite or another client may already own it).
+            log(f"input grab change failed: {error}")
+
     write_state({"phase": "idle", "seq": 0, "source": "touchscreen", "updatedAt": time.time_ns()})
 
     try:
-        for ev in dev.read_loop():
+        sync_capture()
+        for ev in input_events():
+            if ev is None:
+                sync_capture()
+                continue
             if not RUNNING:
                 break
 
@@ -328,12 +375,15 @@ def main():
 
             if mode == "idle":
                 if count == 0:
-                    emit(current_frame)
+                    if grabbed:
+                        emit(current_frame)
+                    sync_capture()
                     continue
-                refresh_config()
-                if not (zen_active() and CONFIG.get("enabled", True)):
-                    emit(current_frame)
-                    mode = "pass"
+                # Outside Zen (or before the focus classifier settles), the
+                # real touchscreen owns delivery; mirroring would duplicate
+                # presses and turn scrolls into clicks/selections.
+                if not grabbed:
+                    mode = "native"
                     continue
                 buffer.extend(current_frame)
                 gesture_start = now
@@ -345,6 +395,12 @@ def main():
                 else:
                     flush_buffer()
                     mode = "pass"
+                continue
+
+            if mode == "native":
+                if count == 0:
+                    reset(clear_state=False)
+                    sync_capture()
                 continue
 
             if mode == "pass":
@@ -491,7 +547,8 @@ def main():
         try:
             if mode == "swipe":
                 publish_swipe("end", swipe_last_dx, velocity=0.0, commit=False, reason="service-stop", force=True)
-            dev.ungrab()
+            if grabbed:
+                dev.ungrab()
         except Exception:
             pass
         ui.close()

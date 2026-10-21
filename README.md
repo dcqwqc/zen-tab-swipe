@@ -24,4 +24,6 @@ The deployment script installs both `qwqc-zen-touchpad-swipe.service` and `qwqc-
 
 The touchscreen classifier now flushes ordinary one-finger movement after ~0.35% of device travel (previously 1%) or a 75 ms second-finger grace period (previously 120 ms). This reduces initial swipe latency and accidental click/selection behavior in Zen content such as long ChatGPT conversations. Clear two-finger horizontal gestures continue to switch tabs; the physical touchpad remains a passive-observer path.
 
-The evdev reader also exits promptly on service stop and releases its exclusive device grab before restart, instead of waiting for another touch or being SIGKILLed. Test the classifier with `~/.local/share/qwqc-zen-touchpad-swipe/venv/bin/python -m unittest discover -s tests -v`.
+Outside Zen, the service relinquishes its exclusive touchscreen grab while idle, leaving native hardware input in charge rather than replaying a second synthetic stream into other apps. When Zen gains focus, the special two-finger tab-switch bridge is re-enabled. Capture never changes midway through a contact. This preserves system-wide native scrolling and prevents duplicate presses from the auxiliary gesture service.
+
+The evdev reader also exits promptly on service stop and releases its exclusive device grab before restart, instead of waiting for another touch or being SIGKILLed. Test the classifier and input routing with `~/.local/share/qwqc-zen-touchpad-swipe/venv/bin/python -m unittest discover -s tests -v`.
