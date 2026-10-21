@@ -20,6 +20,10 @@ DEVICE_NAME = os.environ.get("QWQC_TOUCH_DEVICE", "Wacom HID 53B7 Finger")
 # events for 120 ms / ~1% of the display used to make slow scrolls start like
 # clicks and could cause pressed highlights or text selections in web apps.
 SECOND_FINGER_GRACE = 0.075
+# Keep the first two contacts buffered briefly so a third/fourth finger can
+# arrive BEFORE Firefox can interpret the sequence as a page pinch.
+# A two-finger gesture continues normally after this short settling period.
+MULTI_FINGER_SETTLE_SECONDS = 0.105
 SINGLE_MOVE_FLUSH = 0.0035
 SWIPE_INTENT_X = 0.010
 SWIPE_INTENT_FINGER_X = 0.006
@@ -479,13 +483,18 @@ def main():
                 continue
 
             # mode == "two": classify the intent before Firefox sees the
-            # sequence. Horizontal coherent movement wins over small incidental
-            # spacing changes, which is what the old version got wrong.
+            # sequence. A quick 3/4-finger system gesture must never start
+            # as an application pinch just because contacts landed in sequence.
             if count != 2 or not two_slots or any(slot not in contacts for slot in two_slots):
                 flush_buffer()
                 mode = "pass" if count else "idle"
                 if count == 0:
                     reset(clear_state=False)
+                continue
+
+            if now - two_start_time < MULTI_FINGER_SETTLE_SECONDS:
+                # Buffered event sequence stays ordered and can still be
+                # forwarded when this resolves to a genuine two-finger gesture.
                 continue
 
             dx, dy, d0x, d1x, d0y, d1y, scale_change = geometry(contacts)

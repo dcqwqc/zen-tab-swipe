@@ -27,3 +27,15 @@ The touchscreen classifier now flushes ordinary one-finger movement after ~0.35%
 Outside Zen, the service relinquishes its exclusive touchscreen grab while idle, leaving native hardware input in charge rather than replaying a second synthetic stream into other apps. When Zen gains focus, the special two-finger tab-switch bridge is re-enabled. Capture never changes midway through a contact. This preserves system-wide native scrolling and prevents duplicate presses from the auxiliary gesture service.
 
 The evdev reader also exits promptly on service stop and releases its exclusive device grab before restart, instead of waiting for another touch or being SIGKILLed. Test the classifier and input routing with `~/.local/share/qwqc-zen-touchpad-swipe/venv/bin/python -m unittest discover -s tests -v`.
+
+### Three-/four-finger touchscreen system gestures
+
+The touchscreen bridge owns physical touch events only while Zen is focused.
+It buffers the beginning of a two-finger interaction for 105 ms before
+classifying a tab swipe or pinch. If a third/fourth contact arrives in this
+settling interval, it forwards the original ordered sequence to Hyprland,
+where Hyprgrass recognizes the system-wide gesture and cancels the app's
+touch sequence. This prevents a four-finger keyboard command from accidentally
+starting as a browser pinch while keeping one-finger scrolling fast.
+
+The behavior is regression-tested in `tests/test_multifinger_arbitration.py`.
