@@ -19,3 +19,9 @@ Progressive **two-finger touchpad and direct-touchscreen** tab switching for Zen
 The Sine mod renders the progressive preview and owns the final tab selection. A small host-side observer reads the physical ELAN touchpad's multitouch coordinates from evdev **without grabbing the device**, so pointer movement, taps, scrolling and pinch still go through libinput normally. Firefox's own horizontal swipe command is disabled while this mod is active to avoid an immediate duplicate tab switch underneath the preview.
 
 The deployment script installs both `qwqc-zen-touchpad-swipe.service` and `qwqc-zen-touchscreen-swipe.service`. The touchscreen service suppresses only a recognized horizontal two-finger tab gesture and passes normal touch, vertical movement, and pinch through.
+
+## Touch-scroll priority on Mirai
+
+The touchscreen classifier now flushes ordinary one-finger movement after ~0.35% of device travel (previously 1%) or a 75 ms second-finger grace period (previously 120 ms). This reduces initial swipe latency and accidental click/selection behavior in Zen content such as long ChatGPT conversations. Clear two-finger horizontal gestures continue to switch tabs; the physical touchpad remains a passive-observer path.
+
+The evdev reader also exits promptly on service stop and releases its exclusive device grab before restart, instead of waiting for another touch or being SIGKILLed. Test the classifier with `~/.local/share/qwqc-zen-touchpad-swipe/venv/bin/python -m unittest discover -s tests -v`.

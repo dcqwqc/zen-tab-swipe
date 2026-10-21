@@ -14,8 +14,12 @@ from evdev import InputDevice, UInput, ecodes
 DEVICE_NAME = os.environ.get("QWQC_TOUCH_DEVICE", "Wacom HID 53B7 Finger")
 
 # Fractions of the physical touchscreen range.
-SECOND_FINGER_GRACE = 0.120
-SINGLE_MOVE_FLUSH = 0.010
+# A short classification window still allows deliberately placed two-finger
+# tab-swipes, but keeps native one-finger scrolling responsive. Holding touch
+# events for 120 ms / ~1% of the display used to make slow scrolls start like
+# clicks and could cause pressed highlights or text selections in web apps.
+SECOND_FINGER_GRACE = 0.075
+SINGLE_MOVE_FLUSH = 0.0035
 SWIPE_INTENT_X = 0.010
 SWIPE_INTENT_FINGER_X = 0.006
 VERTICAL_INTENT = 0.014
@@ -28,6 +32,10 @@ STATE_THROTTLE = 0.008
 TRANSFORM_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "yoga-tablet-capture-transform"
 
 RUNNING = True
+
+
+class StopRequested(Exception):
+    """Interrupt the blocking evdev read so the device grab is released."""
 CONFIG = {"enabled": True, "reverse": False}
 CONFIG_MTIME = None
 
@@ -139,6 +147,11 @@ def norm_distance(a, b, xr, yr):
     return math.hypot(dx, dy)
 
 
+def single_touch_should_pass(dx: float, dy: float, elapsed: float) -> bool:
+    """Release native one-finger touches as soon as scroll intent is clear."""
+    return max(abs(dx), abs(dy)) >= SINGLE_MOVE_FLUSH or elapsed >= SECOND_FINGER_GRACE
+
+
 def main():
     global RUNNING
 
@@ -165,6 +178,10 @@ def main():
     def stop(_sig, _frame):
         global RUNNING
         RUNNING = False
+        # Setting a flag alone cannot stop InputDevice.read_loop(): it may
+        # block until another touch event, forcing systemd to SIGKILL us.
+        # Raising here unwinds through our finally block and ungrabs cleanly.
+        raise StopRequested()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -400,7 +417,7 @@ def main():
                 pos = next(iter(contacts.values()))
                 dx = abs(pos[0] - single_start[0]) / xr
                 dy = abs(pos[1] - single_start[1]) / yr
-                if max(dx, dy) >= SINGLE_MOVE_FLUSH or now - gesture_start >= SECOND_FINGER_GRACE:
+                if single_touch_should_pass(dx, dy, now - gesture_start):
                     flush_buffer()
                     mode = "pass"
                 continue
@@ -468,6 +485,8 @@ def main():
                 mode = "pass"
                 continue
 
+    except StopRequested:
+        pass
     finally:
         try:
             if mode == "swipe":
